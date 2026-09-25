@@ -31,7 +31,7 @@ A permanent test earns its place only if it protects behavior someone relies on 
 
    A `build_error_suspected` warning means the old run failed only because the test uses new names; for a bug fix, test through an interface the old code already had. If a run is interrupted, `test-check prove --restore` puts your files back. For a one-off check: run it and keep the output.
 
-   Then check that no changed code is left untested: `test-check prove --pieces --test "<command that runs the change's tests>"` (`test-check prove --list-tests` prints them). It undoes each changed piece of code on its own and expects the tests to fail each time. A `not_tested` piece is behavior nothing checks: test it, or say in the PR why it needs no test. Done when the PR description records both `prove` outcomes (or the one-off command and what you observed) — not before.
+   Optionally, look for changed code no test checks: `test-check prove --pieces --test "<command that runs the change's tests>"` (`test-check prove --list-tests` prints them). It undoes each changed piece of code on its own and lists every `not_tested` piece. Many are fine (logging, wording, defaults); use the list to decide what deserves a test, not as a pass/fail. Done when the PR description records the `prove` outcome (or the one-off command and what you observed) — not before.
 
 `test-check` is advice. Your own evidence decides; never skip verification because it said no test.
 

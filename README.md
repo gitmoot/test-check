@@ -39,7 +39,7 @@ test-check prove --test "go test ./pkg -v -run '^{name}$'"
 
 Without `{name}`, the command runs once for the whole change, and one red test is enough.
 
-### Every changed piece must be tested
+### Which changed pieces no test checks (advisory)
 
 Red/green only checks the tests you wrote. `--pieces` checks the code you changed:
 
@@ -53,6 +53,8 @@ It undoes one changed piece of code at a time (one diff hunk, a whole added file
 - Comment- and whitespace-only hunks are skipped.
 - Above `--max-pieces` (default 60), nothing runs and the outcome is `too_many_pieces`.
 - Each piece goes through the same save-first stash, so `--restore` recovers an interrupted run.
+
+Treat the list as advice. On 20 past PRs that reviewers approved without test findings, 15 had at least one `not_tested` piece: often logging, wording or defaults that need no test.
 
 Test files and fixtures keep their new versions for both runs. The reverted files are saved under the git dir before anything changes. An interrupted or crashed run is recovered with `test-check prove --restore`, and a new run refuses to start until then.
 
