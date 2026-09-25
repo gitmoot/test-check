@@ -19,7 +19,16 @@ A permanent test earns its place only if it protects behavior someone relies on 
    | `need_context` | Answer the four questions yourself. |
 
    If it warns that an added test looks **low-value**, rework it until it can go red, or delete it.
-3. **Prove it.** For a new or extended test: run it on the old code (stash or revert the fix) and see it go red, then on the new code and see it go green. For a one-off check: run it and keep the output. Done when the PR description records the red and green runs (or the one-off command and what you observed) — not before.
+3. **Prove it.** For a new or extended test, run `test-check prove --test "<narrowest command that runs it>"` — for example `go test ./pkg -run TestRetry`. It runs the tests on your new code, then again with every non-test change reverted, and restores your files afterwards. Outcomes:
+
+   | outcome | exit | meaning |
+   |---|---|---|
+   | `proven` | 0 | Red on the old code, green on the new. Done. |
+   | `not_red_on_old` | 4 | The test passes without the fix: it protects nothing. Make it fail without the fix. |
+   | `fails_on_new` | 4 | The test fails on your code. Fix that first. |
+   | `no_test_in_change` | 4 | No test file changed. Add one, or treat it as a one-off check. |
+
+   A `build_error_suspected` warning means the old run failed only because the test uses new names; for a bug fix, test through an interface the old code already had. If a run is interrupted, `test-check prove --restore` puts your files back. For a one-off check: run it and keep the output. Done when the PR description records the `prove` outcome (or the one-off command and what you observed) — not before.
 
 `test-check` is advice. Your own evidence decides; never skip verification because it said no test.
 

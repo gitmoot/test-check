@@ -22,6 +22,30 @@ It also reports two probabilities:
 It is advice, not a gate. The agent still proves the change works; see the
 [skill](skills/test-check/SKILL.md).
 
+## Prove a test goes red
+
+JEV reading a diff cannot tell whether a test would pass on the old code. So
+`test-check prove` runs it:
+
+```sh
+test-check prove --test "go test ./pkg -run TestRetry"
+```
+
+1. It runs the command on the working tree. The tests must pass.
+2. It puts every changed non-test file back to its base version and runs the command again. The tests must fail.
+3. It restores the files.
+
+Test files and fixtures keep their new versions for both runs. The reverted files are saved under the git dir before anything changes. An interrupted or crashed run is recovered with `test-check prove --restore`, and a new run refuses to start until then.
+
+Outcomes:
+- `proven`: exit 0.
+- `not_red_on_old`: exit 4. The test passes without the fix.
+- `fails_on_new`: exit 4.
+- `no_test_in_change`: exit 4.
+- `no_code_in_change`: exit 0. Only tests changed.
+
+A `build_error_suspected` flag marks an old-code failure that looks like a compile or import error rather than a failed assertion.
+
 ## Use
 
 ```sh

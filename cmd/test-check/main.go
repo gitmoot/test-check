@@ -1,4 +1,5 @@
-// Command test-check asks JEV what testing a code change needs.
+// Command test-check asks JEV what testing a code change needs, and proves
+// that a change's tests go red on the old code and green on the new.
 package main
 
 import (
@@ -41,6 +42,9 @@ func main() {
 }
 
 func run(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "prove" {
+		return runProve(args[1:], stdout, stderr)
+	}
 	fs := flag.NewFlagSet("test-check", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() {
@@ -52,8 +56,14 @@ func run(args []string, stdout, stderr io.Writer) int {
       a pull request's current head
   test-check --repo OWNER/REPO --compare BASE...HEAD [--title TEXT] [--json]
       the change between two commits
+  test-check prove --test CMD [--dir DIR] [--base REF] [--timeout DUR] [--json]
+      run CMD on the new code (must pass), then with every non-test change
+      reverted (must fail); files are restored afterwards
+  test-check prove --restore [--dir DIR]
+      put back files a crashed prove run left reverted
 
-Exit: 0 advice printed, 1 change unreadable, 2 usage, 3 JEV unavailable.
+Exit: 0 advice printed / proven, 1 error, 2 usage, 3 JEV unavailable,
+4 not proven (passes on the old code, fails on the new, or no test changed).
 Key: $OPENROUTER_API_KEY, else OPENROUTER_API_KEY in ~/.config/gitmoot/keychain.env.`)
 	}
 	dir := fs.String("dir", ".", "local git checkout")

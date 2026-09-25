@@ -10,7 +10,7 @@ import (
 // MaxNearbyTests bounds how many existing test files are shown to the model.
 const MaxNearbyTests = 8
 
-var testFilePattern = regexp.MustCompile(`(_test\.go$|\.(test|spec)\.[cm]?[jt]sx?$|(^|/)test_[^/]*\.py$|_test\.py$|Tests?\.swift$|_test\.rs$|_spec\.rb$|(^|/)(tests?|__tests__|spec|Tests)/)`)
+var testFilePattern = regexp.MustCompile(`(_test\.go$|\.(test|spec)\.[cm]?[jt]sx?$|(^|/)test_[^/]*\.py$|_test\.py$|Tests?\.swift$|_test\.rs$|_spec\.rb$|_test\.(sh|bash)$|\.bats$|(^|/)(tests?|__tests__|spec|Tests)/)`)
 
 // IsTestFile reports whether a repository path looks like test code.
 func IsTestFile(p string) bool {

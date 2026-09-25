@@ -16,25 +16,14 @@ import (
 // with base, including uncommitted and untracked files, so it can run before a
 // commit exists. An empty base means the remote's default branch.
 func Local(ctx context.Context, dir, base, title string) (check.Input, error) {
-	git := func(args ...string) (string, error) {
-		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
-		out, err := cmd.Output()
-		if err != nil {
-			var exit *exec.ExitError
-			if errors.As(err, &exit) {
-				return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(exit.Stderr)))
-			}
-			return "", err
-		}
-		return string(out), nil
-	}
+	git := Git(ctx, dir)
 	root, err := git("rev-parse", "--show-toplevel")
 	if err != nil {
 		return check.Input{}, err
 	}
 	root = strings.TrimSpace(root)
 	if base == "" {
-		base, err = defaultBase(git)
+		base, err = DefaultBase(git)
 		if err != nil {
 			return check.Input{}, err
 		}
@@ -48,7 +37,7 @@ func Local(ctx context.Context, dir, base, title string) (check.Input, error) {
 	if err != nil {
 		return check.Input{}, err
 	}
-	for _, p := range splitZ(untracked) {
+	for _, p := range SplitZ(untracked) {
 		content, err := os.ReadFile(filepath.Join(root, p))
 		if err != nil {
 			return check.Input{}, err
@@ -66,7 +55,7 @@ func Local(ctx context.Context, dir, base, title string) (check.Input, error) {
 	if err != nil {
 		return check.Input{}, err
 	}
-	all := append(splitZ(tracked), splitZ(untracked)...)
+	all := append(SplitZ(tracked), SplitZ(untracked)...)
 	head, _ := git("rev-parse", "HEAD")
 	if title == "" {
 		if subject, err := git("log", "-1", "--format=%s", base+"..HEAD"); err == nil {
@@ -79,7 +68,24 @@ func Local(ctx context.Context, dir, base, title string) (check.Input, error) {
 	}), nil
 }
 
-func defaultBase(git func(...string) (string, error)) (string, error) {
+// Git returns a runner for git commands in dir; errors carry git's stderr.
+func Git(ctx context.Context, dir string) func(args ...string) (string, error) {
+	return func(args ...string) (string, error) {
+		cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+		out, err := cmd.Output()
+		if err != nil {
+			var exit *exec.ExitError
+			if errors.As(err, &exit) {
+				return "", fmt.Errorf("git %s: %s", strings.Join(args, " "), strings.TrimSpace(string(exit.Stderr)))
+			}
+			return "", err
+		}
+		return string(out), nil
+	}
+}
+
+// DefaultBase is the remote's default branch, else a local main or master.
+func DefaultBase(git func(...string) (string, error)) (string, error) {
 	if ref, err := git("symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); err == nil {
 		return strings.TrimSpace(ref), nil
 	}
@@ -91,7 +97,8 @@ func defaultBase(git func(...string) (string, error)) (string, error) {
 	return "", errors.New("cannot find a base branch; pass --base")
 }
 
-func splitZ(out string) []string {
+// SplitZ splits NUL-separated git output.
+func SplitZ(out string) []string {
 	var paths []string
 	for _, p := range strings.Split(out, "\x00") {
 		if p != "" {

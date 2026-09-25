@@ -117,3 +117,29 @@ func TestRunRejectsConflictingModes(t *testing.T) {
 		}
 	}
 }
+
+func TestProveExitCodes(t *testing.T) {
+	dir := repoWithChange(t)
+	if err := os.WriteFile(filepath.Join(dir, "a_test.sh"), []byte("grep -q 'X = 1' a.go\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"prove", "--dir", dir, "--base", "main", "--test", "sh a_test.sh"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("proven change exit %d: %s%s", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "outcome: proven") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a_test.sh"), []byte("grep -q 'package a' a.go\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if code := run([]string{"prove", "--dir", dir, "--base", "main", "--test", "sh a_test.sh"}, &stdout, &stderr); code != exitNotProven {
+		t.Fatalf("weak test exit %d, want %d: %s", code, exitNotProven, stdout.String())
+	}
+	for _, args := range [][]string{{"prove"}, {"prove", "--restore", "--test", "true"}} {
+		if code := run(args, &stdout, &stderr); code != exitUsage {
+			t.Fatalf("run(%v) = %d, want %d", args, code, exitUsage)
+		}
+	}
+}
