@@ -19,7 +19,7 @@ A permanent test earns its place only if it protects behavior someone relies on 
    | `need_context` | Answer the four questions yourself. |
 
    If it warns that an added test looks **low-value**, rework it until it can go red, or delete it.
-3. **Prove it.** For a new or extended test, run `test-check prove --test "<narrowest command that runs it>"` — for example `go test ./pkg -run TestRetry`. It runs the tests on your new code, then again with every non-test change reverted, and restores your files afterwards. Outcomes:
+3. **Prove it.** For a new or extended test, run `test-check prove --test "<verbose command for ONE test, with {name}>"` — for example `go test ./pkg -v -run '^{name}$'` or `python3 -m pytest -v -k '{name}'`. It finds the tests your change adds or edits (Go and Python; otherwise pass `--each A,B`), runs each on your new code, then again with every non-test change reverted, and restores your files. **Every** test must go red on its own. Outcomes:
 
    | outcome | exit | meaning |
    |---|---|---|
@@ -27,6 +27,7 @@ A permanent test earns its place only if it protects behavior someone relies on 
    | `not_red_on_old` | 4 | The test passes without the fix: it protects nothing. Make it fail without the fix. |
    | `fails_on_new` | 4 | The test fails on your code. Fix that first. |
    | `no_test_in_change` | 4 | No test file changed. Add one, or treat it as a one-off check. |
+   | `test_not_run` | 4 | The command never mentioned the test, so it probably selected nothing. Fix the command or the name. |
 
    A `build_error_suspected` warning means the old run failed only because the test uses new names; for a bug fix, test through an interface the old code already had. If a run is interrupted, `test-check prove --restore` puts your files back. For a one-off check: run it and keep the output. Done when the PR description records the `prove` outcome (or the one-off command and what you observed) — not before.
 

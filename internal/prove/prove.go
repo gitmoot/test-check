@@ -29,6 +29,12 @@ const (
 	OutcomeFailsOnNew    = "fails_on_new"
 	OutcomeNoTestChanged = "no_test_in_change"
 	OutcomeNoCodeChanged = "no_code_in_change"
+	// OutcomeNotRun: in per-test mode, the command's output on the new code
+	// never mentioned the test, so it probably selected nothing.
+	OutcomeNotRun = "test_not_run"
+
+	// NamePlaceholder in Options.Test switches to per-test mode.
+	NamePlaceholder = "{name}"
 
 	// stashDir is under the per-worktree git dir, so it never shows up as a
 	// change and cannot be committed.
@@ -48,13 +54,29 @@ type Report struct {
 	RevertedFiles       []string `json:"reverted_files"`
 	NewOutput           string   `json:"new_output,omitempty"`
 	OldOutput           string   `json:"old_output,omitempty"`
+	// Tests holds one result per test in per-test mode. The overall Outcome is
+	// proven only when every test is.
+	Tests []TestResult `json:"tests,omitempty"`
+}
+
+// TestResult is one test's red/green result in per-test mode.
+type TestResult struct {
+	Name                string `json:"name"`
+	Outcome             string `json:"outcome"`
+	BuildErrorSuspected bool   `json:"build_error_suspected"`
+	NewOutput           string `json:"new_output,omitempty"`
+	OldOutput           string `json:"old_output,omitempty"`
 }
 
 // Options configure one run. Test is run with `sh -c` at the repository root.
+// If Test contains {name}, each test is proven on its own: the command is run
+// once per name with {name} replaced, and every test must go red by itself.
+// Names are Each, or when Each is empty the tests the change adds or edits.
 type Options struct {
 	Dir     string
 	Base    string
 	Test    string
+	Each    []string
 	Timeout time.Duration
 }
 
@@ -131,7 +153,23 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 		return report, nil
 	}
 
-	newOut, newErr := runTest(ctx, r.root, opts)
+	if !strings.Contains(opts.Test, NamePlaceholder) {
+		return runWhole(ctx, r, mergeBase, opts, report)
+	}
+	names := opts.Each
+	if len(names) == 0 {
+		if names, err = ChangedTestNames(r.git, mergeBase, r.root, report.TestFiles); err != nil {
+			return Report{}, err
+		}
+		if len(names) == 0 {
+			return Report{}, errors.New("{name} given but no added or edited test functions were found in the change; pass --each NAME,...")
+		}
+	}
+	return runEach(ctx, r, mergeBase, opts, report, names)
+}
+
+func runWhole(ctx context.Context, r repo, mergeBase string, opts Options, report Report) (Report, error) {
+	newOut, newErr := runTest(ctx, r.root, opts.Test, opts.Timeout)
 	report.NewOutput = tail(newOut)
 	if newErr != nil {
 		if ctx.Err() != nil {
@@ -140,20 +178,12 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 		report.Outcome = OutcomeFailsOnNew
 		return report, nil
 	}
-
-	if err := swapToBase(r, mergeBase, report.RevertedFiles); err != nil {
-		if restoreErr := Restore(context.WithoutCancel(ctx), opts.Dir); restoreErr != nil {
-			return Report{}, fmt.Errorf("revert to base failed: %v; restore also failed: %w", err, restoreErr)
-		}
-		return Report{}, fmt.Errorf("revert to base failed (files restored): %w", err)
-	}
-	oldOut, oldErr := runTest(ctx, r.root, opts)
-	// Restore even if the caller cancelled: the working tree must come back.
-	if err := Restore(context.WithoutCancel(ctx), opts.Dir); err != nil {
-		return Report{}, fmt.Errorf("restore failed; recover with `test-check prove --restore`: %w", err)
-	}
-	if ctx.Err() != nil {
-		return Report{}, ctx.Err()
+	var oldOut string
+	var oldErr error
+	if err := onBase(ctx, r, mergeBase, report.RevertedFiles, func() {
+		oldOut, oldErr = runTest(ctx, r.root, opts.Test, opts.Timeout)
+	}); err != nil {
+		return Report{}, err
 	}
 	report.OldOutput = tail(oldOut)
 	if oldErr == nil {
@@ -163,6 +193,152 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	report.Outcome = OutcomeProven
 	report.BuildErrorSuspected = buildError.MatchString(oldOut)
 	return report, nil
+}
+
+// runEach runs every test on the new code first, then reverts once and runs
+// the ones that passed on the old code, so the tree is swapped a single time.
+func runEach(ctx context.Context, r repo, mergeBase string, opts Options, report Report, names []string) (Report, error) {
+	results := make([]TestResult, len(names))
+	var candidates []int
+	for i, name := range names {
+		results[i].Name = name
+		out, err := runTest(ctx, r.root, strings.ReplaceAll(opts.Test, NamePlaceholder, name), opts.Timeout)
+		if ctx.Err() != nil {
+			return Report{}, ctx.Err()
+		}
+		results[i].NewOutput = tail(out)
+		switch {
+		case err != nil:
+			results[i].Outcome = OutcomeFailsOnNew
+		case !strings.Contains(out, name):
+			results[i].Outcome = OutcomeNotRun
+		default:
+			candidates = append(candidates, i)
+		}
+	}
+	if len(candidates) > 0 {
+		if err := onBase(ctx, r, mergeBase, report.RevertedFiles, func() {
+			for _, i := range candidates {
+				if ctx.Err() != nil {
+					return
+				}
+				out, err := runTest(ctx, r.root, strings.ReplaceAll(opts.Test, NamePlaceholder, names[i]), opts.Timeout)
+				results[i].OldOutput = tail(out)
+				if err == nil {
+					results[i].Outcome = OutcomeNotRedOnOld
+					continue
+				}
+				results[i].Outcome = OutcomeProven
+				results[i].BuildErrorSuspected = buildError.MatchString(out)
+			}
+		}); err != nil {
+			return Report{}, err
+		}
+	}
+	report.Tests = results
+	report.Outcome = OutcomeProven
+	for _, worst := range []string{OutcomeNotRedOnOld, OutcomeNotRun, OutcomeFailsOnNew} {
+		for _, res := range results {
+			if res.Outcome == worst {
+				report.Outcome = worst
+			}
+		}
+	}
+	for _, res := range results {
+		report.BuildErrorSuspected = report.BuildErrorSuspected || res.BuildErrorSuspected
+	}
+	return report, nil
+}
+
+// onBase reverts the non-test files to the merge base, calls fn, and restores
+// them even if the caller cancelled: the working tree must come back.
+func onBase(ctx context.Context, r repo, mergeBase string, paths []string, fn func()) error {
+	if err := swapToBase(r, mergeBase, paths); err != nil {
+		if restoreErr := Restore(context.WithoutCancel(ctx), r.root); restoreErr != nil {
+			return fmt.Errorf("revert to base failed: %v; restore also failed: %w", err, restoreErr)
+		}
+		return fmt.Errorf("revert to base failed (files restored): %w", err)
+	}
+	fn()
+	if err := Restore(context.WithoutCancel(ctx), r.root); err != nil {
+		return fmt.Errorf("restore failed; recover with `test-check prove --restore`: %w", err)
+	}
+	return ctx.Err()
+}
+
+var (
+	goTestDecl = regexp.MustCompile(`^func (Test\w+)\(`)
+	pyTestDecl = regexp.MustCompile(`^\s*(?:async\s+)?def (test_\w+)\(`)
+)
+
+// ChangedTestNames lists the Go and Python test functions the change adds or
+// edits. Within each hunk, a changed line belongs to the nearest test
+// declaration above it — the hunk header's function, until the hunk declares
+// another — so an unchanged test merely preceding new ones is not selected.
+// Untracked test files contribute all of their tests.
+func ChangedTestNames(git func(...string) (string, error), mergeBase, root string, testFiles []string) ([]string, error) {
+	seen := map[string]bool{}
+	var names []string
+	add := func(name string) {
+		if name != "" && !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	decl := func(line string) string {
+		for _, re := range []*regexp.Regexp{goTestDecl, pyTestDecl} {
+			if m := re.FindStringSubmatch(line); m != nil {
+				return m[1]
+			}
+		}
+		return ""
+	}
+	if len(testFiles) == 0 {
+		return nil, nil
+	}
+	diff, err := git(append([]string{"diff", "--no-color", "--no-ext-diff", mergeBase, "--"}, testFiles...)...)
+	if err != nil {
+		return nil, err
+	}
+	current := ""
+	for _, line := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "diff --git"), strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+			current = ""
+		case strings.HasPrefix(line, "@@"):
+			current = ""
+			if parts := strings.SplitN(line, "@@", 3); len(parts) == 3 {
+				current = decl(strings.TrimSpace(parts[2]))
+			}
+		case line == "":
+		default:
+			body := line[1:]
+			if name := decl(body); name != "" {
+				current = name
+				if line[0] == '+' {
+					add(name)
+				}
+				continue
+			}
+			if (line[0] == '+' || line[0] == '-') && strings.TrimSpace(body) != "" {
+				add(current)
+			}
+		}
+	}
+	untracked, err := git(append([]string{"ls-files", "--others", "--exclude-standard", "-z", "--"}, testFiles...)...)
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range source.SplitZ(untracked) {
+		content, err := os.ReadFile(filepath.Join(root, p))
+		if err != nil {
+			return nil, err
+		}
+		for _, line := range strings.Split(string(content), "\n") {
+			add(decl(line))
+		}
+	}
+	return names, nil
 }
 
 // changedPaths lists every path that differs from the merge base, including
@@ -336,14 +512,13 @@ func writeSynced(path string, content []byte) error {
 
 // runTest runs the command in its own process group, so a timeout or cancel
 // stops everything it started, and returns combined output.
-func runTest(ctx context.Context, root string, opts Options) (string, error) {
-	timeout := opts.Timeout
+func runTest(ctx context.Context, root, command string, timeout time.Duration) (string, error) {
 	if timeout <= 0 {
 		timeout = 10 * time.Minute
 	}
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(runCtx, "sh", "-c", opts.Test)
+	cmd := exec.CommandContext(runCtx, "sh", "-c", command)
 	cmd.Dir = root
 	setProcessGroup(cmd)
 	// A grandchild holding the output pipe must not block the return.

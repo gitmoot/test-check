@@ -56,9 +56,10 @@ func run(args []string, stdout, stderr io.Writer) int {
       a pull request's current head
   test-check --repo OWNER/REPO --compare BASE...HEAD [--title TEXT] [--json]
       the change between two commits
-  test-check prove --test CMD [--dir DIR] [--base REF] [--timeout DUR] [--json]
+  test-check prove --test CMD [--each A,B] [--dir DIR] [--base REF] [--timeout DUR] [--json]
       run CMD on the new code (must pass), then with every non-test change
-      reverted (must fail); files are restored afterwards
+      reverted (must fail); files are restored afterwards. With {name} in
+      CMD, every added or edited test must go red on its own
   test-check prove --restore [--dir DIR]
       put back files a crashed prove run left reverted
 
