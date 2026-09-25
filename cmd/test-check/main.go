@@ -155,7 +155,9 @@ func apiKey() string {
 	defer file.Close()
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		if value, ok := strings.CutPrefix(strings.TrimSpace(scanner.Text()), apiKeyName+"="); ok {
+		name, value, ok := strings.Cut(strings.TrimSpace(scanner.Text()), "=")
+		if ok && strings.TrimSpace(strings.TrimPrefix(name, "export ")) == apiKeyName {
+			value = strings.TrimSpace(value)
 			return strings.Trim(strings.TrimSpace(value), `"'`)
 		}
 	}

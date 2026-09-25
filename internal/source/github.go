@@ -65,7 +65,10 @@ func Compare(ctx context.Context, repo, base, head, title string) (check.Input, 
 	if err := ghJSON(ctx, &cmp, "api", fmt.Sprintf("repos/%s/compare/%s...%s", repo, base, head)); err != nil {
 		return check.Input{}, err
 	}
-	return fromGitHub(ctx, repo, title, head, cmp.Files)
+	in, err := fromGitHub(ctx, repo, title, head, cmp.Files)
+	// The compare API lists at most 300 files.
+	in.Incomplete = len(cmp.Files) >= 300
+	return in, err
 }
 
 func fromGitHub(ctx context.Context, repo, title, head string, ghFiles []ghFile) (check.Input, error) {

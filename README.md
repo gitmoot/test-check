@@ -41,6 +41,8 @@ Without `{name}`, the command runs once for the whole change, and one red test i
 
 Test files and fixtures keep their new versions for both runs. The reverted files are saved under the git dir before anything changes. An interrupted or crashed run is recovered with `test-check prove --restore`, and a new run refuses to start until then.
 
+Only one prove run may use a checkout at a time: a lock under the git dir makes a second run, or `--restore`, refuse while the first is alive. A lock left by a dead process is taken over. A test that hangs on the old code until `--timeout` counts as red.
+
 Outcomes:
 - `proven`: exit 0.
 - `not_red_on_old`: exit 4. The test passes without the fix.

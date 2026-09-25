@@ -48,11 +48,13 @@ type NearbyTest struct {
 
 // Input is one change and the tests around it.
 type Input struct {
-	Repo   string
-	Title  string
-	Head   string
-	Files  []File
-	Nearby []NearbyTest
+	// Incomplete: the source knows files are missing from Files.
+	Incomplete bool
+	Repo       string
+	Title      string
+	Head       string
+	Files      []File
+	Nearby     []NearbyTest
 }
 
 // Result is JEV's advice and the one next step it implies.
@@ -196,7 +198,7 @@ func nextStep(r Result) string {
 // is always listed; diff and test text are cut to fair shares of their budgets
 // so one huge file cannot hide the others.
 func BuildState(in Input) (state map[string]any, complete bool, nearby []string) {
-	complete = true
+	complete = !in.Incomplete
 	names := make([]string, len(in.Files))
 	texts := make([]string, len(in.Files))
 	for i, file := range in.Files {

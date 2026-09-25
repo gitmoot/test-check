@@ -117,6 +117,11 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
+	release, err := acquire(r)
+	if err != nil {
+		return Report{}, err
+	}
+	defer release()
 	stash := filepath.Join(r.gitDir, stashDir)
 	if _, err := os.Stat(stash); err == nil {
 		return Report{}, fmt.Errorf("a previous prove run did not restore its files; run `test-check prove --restore` first (%s)", stash)
@@ -254,6 +259,9 @@ func runEach(ctx context.Context, r repo, mergeBase string, opts Options, report
 // them even if the caller cancelled: the working tree must come back.
 func onBase(ctx context.Context, r repo, mergeBase string, paths []string, fn func()) error {
 	if err := swapToBase(r, mergeBase, paths); err != nil {
+		if errors.Is(err, errStashTaken) {
+			return err
+		}
 		if restoreErr := Restore(context.WithoutCancel(ctx), r.root); restoreErr != nil {
 			return fmt.Errorf("revert to base failed: %v; restore also failed: %w", err, restoreErr)
 		}
@@ -301,12 +309,18 @@ func ChangedTestNames(git func(...string) (string, error), mergeBase, root strin
 		return nil, err
 	}
 	current := ""
+	// File headers ("+++ b/x", "--- a/x") appear only between "diff --git" and
+	// the first hunk; inside a hunk, a line starting "++" or "--" is content.
+	inHunk := false
 	for _, line := range strings.Split(diff, "\n") {
 		switch {
-		case strings.HasPrefix(line, "diff --git"), strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
-			current = ""
+		case strings.HasPrefix(line, "diff --git"):
+			current, inHunk = "", false
+		case !inHunk && (strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---")):
+		case !inHunk && !strings.HasPrefix(line, "@@"):
+			// index, mode and rename lines of the file header
 		case strings.HasPrefix(line, "@@"):
-			current = ""
+			current, inHunk = "", true
 			if parts := strings.SplitN(line, "@@", 3); len(parts) == 3 {
 				current = decl(strings.TrimSpace(parts[2]))
 			}
@@ -370,6 +384,9 @@ type entry struct {
 func swapToBase(r repo, mergeBase string, paths []string) error {
 	stash := filepath.Join(r.gitDir, stashDir)
 	if err := os.Mkdir(stash, 0o700); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return errStashTaken
+		}
 		return err
 	}
 	entries := make([]entry, len(paths))
@@ -407,39 +424,46 @@ func swapToBase(r repo, mergeBase string, paths []string) error {
 		return err
 	}
 	for _, p := range paths {
-		full := filepath.Join(r.root, p)
-		old, err := r.git("show", mergeBase+":"+p)
-		if err != nil {
-			// Not in the base: the change added it.
-			if err := os.Remove(full); err != nil && !errors.Is(err, fs.ErrNotExist) {
-				return err
-			}
-			continue
-		}
-		mode, err := baseMode(r, mergeBase, p)
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			return err
-		}
-		_ = os.Remove(full)
-		if err := os.WriteFile(full, []byte(old), mode); err != nil {
+		if err := writeBase(r, mergeBase, p); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func baseMode(r repo, mergeBase, p string) (fs.FileMode, error) {
-	out, err := r.git("ls-tree", mergeBase, "--", p)
+// writeBase puts one path back to its merge-base version: a symlink as a
+// symlink, and deleted only when the base does not have the path.
+func writeBase(r repo, mergeBase, p string) error {
+	full := filepath.Join(r.root, p)
+	listing, err := r.git("ls-tree", mergeBase, "--", p)
 	if err != nil {
-		return 0, err
+		return err
 	}
-	if strings.HasPrefix(out, "100755") {
-		return 0o755, nil
+	if strings.TrimSpace(listing) == "" {
+		// Not in the base: the change added it.
+		if err := os.RemoveAll(full); err != nil {
+			return err
+		}
+		return nil
 	}
-	return 0o644, nil
+	old, err := r.git("show", mergeBase+":"+p)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(full); err != nil {
+		return err
+	}
+	switch {
+	case strings.HasPrefix(listing, "120000"):
+		return os.Symlink(old, full)
+	case strings.HasPrefix(listing, "100755"):
+		return os.WriteFile(full, []byte(old), 0o755)
+	default:
+		return os.WriteFile(full, []byte(old), 0o644)
+	}
 }
 
 // Restore puts back every file a prove run reverted, from the manifest under
@@ -449,6 +473,9 @@ func Restore(ctx context.Context, dir string) error {
 	r, err := open(ctx, dir)
 	if err != nil {
 		return err
+	}
+	if pid := lockHolder(filepath.Join(r.gitDir, lockName)); pid > 0 && pid != os.Getpid() && processAlive(pid) {
+		return fmt.Errorf("prove run (pid %d) is still using this checkout; it restores its own files", pid)
 	}
 	stash := filepath.Join(r.gitDir, stashDir)
 	raw, err := os.ReadFile(filepath.Join(stash, manifestName))
@@ -466,7 +493,7 @@ func Restore(ctx context.Context, dir string) error {
 	for _, e := range entries {
 		full := filepath.Join(r.root, e.Path)
 		if !e.Existed {
-			if err := os.Remove(full); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			if err := os.RemoveAll(full); err != nil {
 				return err
 			}
 			continue
@@ -474,7 +501,8 @@ func Restore(ctx context.Context, dir string) error {
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 			return err
 		}
-		if err := os.Remove(full); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		// A test may have created a directory where a reverted file was.
+		if err := os.RemoveAll(full); err != nil {
 			return err
 		}
 		if e.Link != "" {
@@ -537,4 +565,41 @@ func tail(out string) string {
 		return out
 	}
 	return "..." + strings.ToValidUTF8(out[len(out)-tailBytes:], "")
+}
+
+// errStashTaken: another run's stash exists; it must not be restored or
+// removed by this run.
+var errStashTaken = errors.New("another prove run's stash exists under the git dir; wait for it, or run `test-check prove --restore` if it crashed")
+
+const lockName = "test-check-prove.lock"
+
+// acquire takes the per-worktree prove lock with O_EXCL, so two runs never
+// share the stash. A lock whose process is gone is taken over.
+func acquire(r repo) (func(), error) {
+	path := filepath.Join(r.gitDir, lockName)
+	for attempt := 0; attempt < 2; attempt++ {
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if err == nil {
+			_, _ = file.WriteString(strconv.Itoa(os.Getpid()))
+			_ = file.Close()
+			return func() { _ = os.Remove(path) }, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return nil, err
+		}
+		if pid := lockHolder(path); pid > 0 && processAlive(pid) {
+			return nil, fmt.Errorf("another prove run (pid %d) is using this checkout", pid)
+		}
+		_ = os.Remove(path)
+	}
+	return nil, errors.New("could not take the prove lock")
+}
+
+func lockHolder(path string) int {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(raw)))
+	return pid
 }
