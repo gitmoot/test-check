@@ -117,3 +117,26 @@ func TestChangedTestNamesSkipsDeletedAndRenamedAwayTests(t *testing.T) {
 		t.Fatalf("names = %v, want [TestKeep TestNewName]", names)
 	}
 }
+
+// Found on gitmoot#2261: a deleted test split across two hunks came back
+// through the second hunk's header, which git takes from the old file.
+func TestChangedTestNamesIgnoresDeletedTestNamedByHunkHeader(t *testing.T) {
+	dir := t.TempDir()
+	git(t, dir, "init", "-q", "-b", "main")
+	shared := "\tshared1()\n\tshared2()\n\tshared3()\n\tshared4()\n\tshared5()\n\tshared6()\n\tshared7()\n"
+	put(t, dir, "x_test.go", "package x\n\nfunc TestGone(t *testing.T) {\n\tgone1()\n\tgone2()\n"+shared+"\tgone3()\n}\n")
+	git(t, dir, "add", ".")
+	git(t, dir, "commit", "-q", "-m", "base")
+	base := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD"))
+	put(t, dir, "x_test.go", "package x\n\nfunc TestKeep(t *testing.T) {\n"+shared+"\tkeep()\n}\n")
+	if diff := git(t, dir, "diff", base, "--", "x_test.go"); !strings.Contains(diff, "@@ func TestGone(") {
+		t.Fatalf("fixture no longer produces a hunk header naming the deleted test:\n%s", diff)
+	}
+	names, err := ChangedTestNames(source.Git(context.Background(), dir), base, dir, []string{"x_test.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(names, []string{"TestKeep"}) {
+		t.Fatalf("names = %v, want [TestKeep]", names)
+	}
+}

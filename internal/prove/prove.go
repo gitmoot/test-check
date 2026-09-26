@@ -347,6 +347,27 @@ func ChangedTestNames(git func(...string) (string, error), mergeBase, root strin
 			}
 		}
 	}
+	// Git labels a hunk with the nearest function of the OLD file, so a hunk
+	// can name a test the change deleted. Keep only tests still declared.
+	declared := map[string]bool{}
+	for _, p := range testFiles {
+		content, err := os.ReadFile(filepath.Join(root, p))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(content), "\n") {
+			if name := decl(line); name != "" {
+				declared[name] = true
+			}
+		}
+	}
+	kept := names[:0]
+	for _, name := range names {
+		if declared[name] {
+			kept = append(kept, name)
+		}
+	}
+	names = kept
 	untracked, err := git(append([]string{"ls-files", "--others", "--exclude-standard", "-z", "--"}, testFiles...)...)
 	if err != nil {
 		return nil, err

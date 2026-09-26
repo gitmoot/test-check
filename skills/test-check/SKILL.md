@@ -24,7 +24,7 @@ A permanent test earns its place only if it protects behavior someone relies on 
    | outcome | exit | meaning |
    |---|---|---|
    | `proven` | 0 | Red on the old code, green on the new. Done. |
-   | `not_red_on_old` | 4 | The test passes without the fix: it protects nothing. Make it fail without the fix. |
+   | `not_red_on_old` | 4 | The test passes without the fix. Make it fail without the fix — unless it is a guard test ("X is *not* matched", "Y stays unchanged") or only its fixture changed: those pass on old code by design; say so in the PR. |
    | `fails_on_new` | 4 | The test fails on your code. Fix that first. |
    | `no_test_in_change` | 4 | No test file changed. Add one, or treat it as a one-off check. |
    | `test_not_run` | 4 | The command never mentioned the test, so it probably selected nothing. Fix the command or the name. |
