@@ -98,3 +98,45 @@ func TestOldRunSeesBaseSymlinkAsSymlink(t *testing.T) {
 		t.Fatalf("outcome = %s, want proven (old run must see a symlink)", report.Outcome)
 	}
 }
+
+// Found on gitmoot#2261: a test the change deletes was still listed, and then
+// reported test_not_run because it no longer exists.
+func TestChangedTestNamesSkipsDeletedAndRenamedAwayTests(t *testing.T) {
+	dir := t.TempDir()
+	git(t, dir, "init", "-q", "-b", "main")
+	put(t, dir, "x_test.go", "package x\n\nfunc TestKeep(t *testing.T) {\n\t_ = 1\n}\n\nfunc TestGone(t *testing.T) {\n\t_ = 2\n\t_ = 3\n}\n\nfunc TestOldName(t *testing.T) {\n\t_ = 4\n}\n")
+	git(t, dir, "add", ".")
+	git(t, dir, "commit", "-q", "-m", "base")
+	base := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD"))
+	put(t, dir, "x_test.go", "package x\n\nfunc TestKeep(t *testing.T) {\n\t_ = 10\n}\n\nfunc TestNewName(t *testing.T) {\n\t_ = 4\n}\n")
+	names, err := ChangedTestNames(source.Git(context.Background(), dir), base, dir, []string{"x_test.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(names, []string{"TestKeep", "TestNewName"}) {
+		t.Fatalf("names = %v, want [TestKeep TestNewName]", names)
+	}
+}
+
+// Found on gitmoot#2261: a deleted test split across two hunks came back
+// through the second hunk's header, which git takes from the old file.
+func TestChangedTestNamesIgnoresDeletedTestNamedByHunkHeader(t *testing.T) {
+	dir := t.TempDir()
+	git(t, dir, "init", "-q", "-b", "main")
+	shared := "\tshared1()\n\tshared2()\n\tshared3()\n\tshared4()\n\tshared5()\n\tshared6()\n\tshared7()\n"
+	put(t, dir, "x_test.go", "package x\n\nfunc TestGone(t *testing.T) {\n\tgone1()\n\tgone2()\n"+shared+"\tgone3()\n}\n")
+	git(t, dir, "add", ".")
+	git(t, dir, "commit", "-q", "-m", "base")
+	base := strings.TrimSpace(git(t, dir, "rev-parse", "HEAD"))
+	put(t, dir, "x_test.go", "package x\n\nfunc TestKeep(t *testing.T) {\n"+shared+"\tkeep()\n}\n")
+	if diff := git(t, dir, "diff", base, "--", "x_test.go"); !strings.Contains(diff, "@@ func TestGone(") {
+		t.Fatalf("fixture no longer produces a hunk header naming the deleted test:\n%s", diff)
+	}
+	names, err := ChangedTestNames(source.Git(context.Background(), dir), base, dir, []string{"x_test.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(names, []string{"TestKeep"}) {
+		t.Fatalf("names = %v, want [TestKeep]", names)
+	}
+}
