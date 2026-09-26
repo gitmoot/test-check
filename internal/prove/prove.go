@@ -328,9 +328,17 @@ func ChangedTestNames(git func(...string) (string, error), mergeBase, root strin
 		default:
 			body := line[1:]
 			if name := decl(body); name != "" {
-				current = name
-				if line[0] == '+' {
+				switch line[0] {
+				case '+':
+					current = name
 					add(name)
+				case '-':
+					// A removed declaration: the lines below it belong to a test
+					// the change deleted (or renamed, and the "+" line names the
+					// new one). Nothing here can be run on the new code.
+					current = ""
+				default:
+					current = name
 				}
 				continue
 			}
