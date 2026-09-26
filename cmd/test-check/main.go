@@ -60,6 +60,10 @@ func run(args []string, stdout, stderr io.Writer) int {
       run CMD on the new code (must pass), then with every non-test change
       reverted (must fail); files are restored afterwards. With {name} in
       CMD, every added or edited test must go red on its own
+  test-check prove --pieces --test CMD [--max-pieces N] [--dir DIR] [--base REF] [--json]
+      undo each changed piece of code on its own; CMD must fail every time
+  test-check prove --list-tests [--dir DIR] [--base REF]
+      print the Go/Python tests the change adds or edits
   test-check prove --restore [--dir DIR]
       put back files a crashed prove run left reverted
 

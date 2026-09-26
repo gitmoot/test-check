@@ -29,7 +29,9 @@ A permanent test earns its place only if it protects behavior someone relies on 
    | `no_test_in_change` | 4 | No test file changed. Add one, or treat it as a one-off check. |
    | `test_not_run` | 4 | The command never mentioned the test, so it probably selected nothing. Fix the command or the name. |
 
-   A `build_error_suspected` warning means the old run failed only because the test uses new names; for a bug fix, test through an interface the old code already had. If a run is interrupted, `test-check prove --restore` puts your files back. For a one-off check: run it and keep the output. Done when the PR description records the `prove` outcome (or the one-off command and what you observed) — not before.
+   A `build_error_suspected` warning means the old run failed only because the test uses new names; for a bug fix, test through an interface the old code already had. If a run is interrupted, `test-check prove --restore` puts your files back. For a one-off check: run it and keep the output.
+
+   Optionally, look for changed code no test checks: `test-check prove --pieces --test "<command that runs the change's tests>"` (`test-check prove --list-tests` prints them). It undoes each changed piece of code on its own and lists every `not_tested` piece. Many are fine (logging, wording, defaults); use the list to decide what deserves a test, not as a pass/fail. Done when the PR description records the `prove` outcome (or the one-off command and what you observed) — not before.
 
 `test-check` is advice. Your own evidence decides; never skip verification because it said no test.
 

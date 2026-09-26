@@ -57,6 +57,8 @@ type Report struct {
 	// Tests holds one result per test in per-test mode. The overall Outcome is
 	// proven only when every test is.
 	Tests []TestResult `json:"tests,omitempty"`
+	// Pieces holds one result per changed piece of code in piece mode.
+	Pieces []PieceResult `json:"pieces,omitempty"`
 }
 
 // TestResult is one test's red/green result in per-test mode.
@@ -78,6 +80,10 @@ type Options struct {
 	Test    string
 	Each    []string
 	Timeout time.Duration
+	// Pieces undoes each changed piece of code on its own instead of all of
+	// it at once; every piece must turn the test command red.
+	Pieces    bool
+	MaxPieces int
 }
 
 var testSupport = regexp.MustCompile(`(^|/)(testdata|fixtures?|__snapshots__|__fixtures__)/`)
@@ -158,6 +164,12 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 		return report, nil
 	}
 
+	if opts.Pieces {
+		if strings.Contains(opts.Test, NamePlaceholder) {
+			return Report{}, errors.New("piece mode runs the test command as given; drop {name}")
+		}
+		return runPieces(ctx, r, mergeBase, opts, report)
+	}
 	if !strings.Contains(opts.Test, NamePlaceholder) {
 		return runWhole(ctx, r, mergeBase, opts, report)
 	}
@@ -382,6 +394,20 @@ type entry struct {
 // the manifest BEFORE touching the working tree, then puts each path back to
 // its base version (deleting it if the base did not have it).
 func swapToBase(r repo, mergeBase string, paths []string) error {
+	if err := stashPaths(r, paths); err != nil {
+		return err
+	}
+	for _, p := range paths {
+		if err := writeBase(r, mergeBase, p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// stashPaths saves the current version of each path under the git dir and
+// writes the manifest, synced, before the caller touches the working tree.
+func stashPaths(r repo, paths []string) error {
 	stash := filepath.Join(r.gitDir, stashDir)
 	if err := os.Mkdir(stash, 0o700); err != nil {
 		if errors.Is(err, fs.ErrExist) {
@@ -420,15 +446,7 @@ func swapToBase(r repo, mergeBase string, paths []string) error {
 	if err != nil {
 		return err
 	}
-	if err := writeSynced(filepath.Join(stash, manifestName), manifest); err != nil {
-		return err
-	}
-	for _, p := range paths {
-		if err := writeBase(r, mergeBase, p); err != nil {
-			return err
-		}
-	}
-	return nil
+	return writeSynced(filepath.Join(stash, manifestName), manifest)
 }
 
 // writeBase puts one path back to its merge-base version: a symlink as a
@@ -602,4 +620,34 @@ func lockHolder(path string) int {
 	}
 	pid, _ := strconv.Atoi(strings.TrimSpace(string(raw)))
 	return pid
+}
+
+// ListTests returns the Go and Python tests the change adds or edits, the same
+// names per-test mode would run.
+func ListTests(ctx context.Context, dir, base string) ([]string, error) {
+	r, err := open(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	if base == "" {
+		if base, err = source.DefaultBase(r.git); err != nil {
+			return nil, err
+		}
+	}
+	mergeBase, err := r.git("merge-base", base, "HEAD")
+	if err != nil {
+		return nil, err
+	}
+	mergeBase = strings.TrimSpace(mergeBase)
+	changed, err := changedPaths(r, mergeBase)
+	if err != nil {
+		return nil, err
+	}
+	var tests []string
+	for _, p := range changed {
+		if IsTestSide(p) {
+			tests = append(tests, p)
+		}
+	}
+	return ChangedTestNames(r.git, mergeBase, r.root, tests)
 }

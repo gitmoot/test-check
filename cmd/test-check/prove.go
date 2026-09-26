@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -18,12 +19,14 @@ import (
 const exitNotProven = 4
 
 var proveMessages = map[string]string{
-	prove.OutcomeProven:        "The tests fail on the old code and pass on the new: they would catch a regression of this change.",
-	prove.OutcomeNotRedOnOld:   "The tests PASS on the old code too, so they would not catch a regression. Make them fail without the fix.",
-	prove.OutcomeFailsOnNew:    "The tests FAIL on the new code. Fix that before proving.",
-	prove.OutcomeNoTestChanged: "The change has no test files. If a test is needed, add one; otherwise record the one-off check you ran.",
-	prove.OutcomeNoCodeChanged: "Only tests changed; there is no old code to prove them against.",
-	prove.OutcomeNotRun:        "A test never appeared in the command's output on the new code, so the command probably did not run it. Use a verbose runner (go test -v, pytest -v) and check the name.",
+	prove.OutcomeProven:         "The tests fail on the old code and pass on the new: they would catch a regression of this change.",
+	prove.OutcomeNotRedOnOld:    "The tests PASS on the old code too, so they would not catch a regression. Make them fail without the fix.",
+	prove.OutcomeFailsOnNew:     "The tests FAIL on the new code. Fix that before proving.",
+	prove.OutcomeNoTestChanged:  "The change has no test files. If a test is needed, add one; otherwise record the one-off check you ran.",
+	prove.OutcomeNoCodeChanged:  "Only tests changed; there is no old code to prove them against.",
+	prove.OutcomePieceNotTested: "Undoing a changed piece of code left every test passing: no test notices it. Test that piece, or say why it needs none.",
+	prove.OutcomeTooManyPieces:  "The change has more pieces than --max-pieces; nothing was run. Prove a narrower change or raise the limit.",
+	prove.OutcomeNotRun:         "A test never appeared in the command's output on the new code, so the command probably did not run it. Use a verbose runner (go test -v, pytest -v) and check the name.",
 }
 
 func runProve(args []string, stdout, stderr io.Writer) int {
@@ -35,12 +38,26 @@ func runProve(args []string, stdout, stderr io.Writer) int {
 	each := fs.String("each", "", "comma-separated test names for {name} (default: the Go/Python tests the change adds or edits)")
 	timeout := fs.Duration("timeout", 10*time.Minute, "limit for each test run")
 	restore := fs.Bool("restore", false, "restore files a crashed prove run left reverted")
+	pieces := fs.Bool("pieces", false, "undo each changed piece of code on its own; every piece must turn the tests red")
+	maxPieces := fs.Int("max-pieces", prove.DefaultMaxPieces, "refuse piece mode above this many pieces")
+	listTests := fs.Bool("list-tests", false, "print the tests the change adds or edits, one per line, and exit")
 	asJSON := fs.Bool("json", false, "print the report as JSON")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return 0
 		}
 		return exitUsage
+	}
+	if *listTests {
+		names, err := prove.ListTests(context.Background(), *dir, *base)
+		if err != nil {
+			fmt.Fprintf(stderr, "test-check prove: %v\n", err)
+			return exitSource
+		}
+		for _, name := range names {
+			fmt.Fprintln(stdout, name)
+		}
+		return 0
 	}
 	if fs.NArg() != 0 || (*restore == (strings.TrimSpace(*test) != "")) {
 		fmt.Fprintln(stderr, "test-check prove: pass exactly one of --test CMD or --restore")
@@ -67,7 +84,7 @@ func runProve(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "test-check prove: --each needs {name} in --test")
 		return exitUsage
 	}
-	report, err := prove.Run(ctx, prove.Options{Dir: *dir, Base: *base, Test: *test, Each: names, Timeout: *timeout})
+	report, err := prove.Run(ctx, prove.Options{Dir: *dir, Base: *base, Test: *test, Each: names, Timeout: *timeout, Pieces: *pieces, MaxPieces: *maxPieces})
 	if err != nil {
 		fmt.Fprintf(stderr, "test-check prove: %v\n", err)
 		return exitSource
@@ -99,7 +116,18 @@ func runProve(args []string, stdout, stderr io.Writer) int {
 	if len(report.RevertedFiles) > 0 && report.Outcome != prove.OutcomeNoTestChanged {
 		fmt.Fprintf(stdout, "reverted for the old-code run: %s\n", strings.Join(report.RevertedFiles, ", "))
 	}
-	if len(report.Tests) > 0 {
+	for _, pc := range report.Pieces {
+		where := pc.File
+		if pc.Line > 0 {
+			where += ":" + strconv.Itoa(pc.Line)
+		}
+		note := ""
+		if pc.BuildErrorSuspected {
+			note = " (only a build error)"
+		}
+		fmt.Fprintf(stdout, "  %-10s %s  %s%s\n", pc.Outcome, where, pc.Snippet, note)
+	}
+	if len(report.Tests) > 0 || len(report.Pieces) > 0 {
 		return code
 	}
 	switch report.Outcome {
