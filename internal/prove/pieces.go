@@ -35,6 +35,8 @@ type PieceResult struct {
 	Line                int    `json:"line"`
 	Lines               int    `json:"lines"`
 	Outcome             string `json:"outcome"`
+	Reason              string `json:"reason,omitempty"`
+	OldOutput           string `json:"old_output,omitempty"`
 	BuildErrorSuspected bool   `json:"build_error_suspected"`
 	Snippet             string `json:"snippet"`
 }
@@ -215,7 +217,7 @@ func applyPiece(r repo, pc piece) error {
 func runPieces(ctx context.Context, r repo, mergeBase string, opts Options, report Report) (Report, error) {
 	pieces, err := codePieces(r, mergeBase, report.RevertedFiles)
 	if err != nil {
-		return Report{}, err
+		return report, err
 	}
 	limit := opts.MaxPieces
 	if limit <= 0 {
@@ -235,7 +237,7 @@ func runPieces(ctx context.Context, r repo, mergeBase string, opts Options, repo
 	newOut, newErr := runTest(ctx, r.root, opts.Test, opts.Timeout)
 	report.NewOutput = tail(newOut)
 	if ctx.Err() != nil {
-		return Report{}, ctx.Err()
+		return report, ctx.Err()
 	}
 	if newErr != nil {
 		report.Outcome = OutcomeFailsOnNew
@@ -246,26 +248,36 @@ func runPieces(ctx context.Context, r repo, mergeBase string, opts Options, repo
 		res := PieceResult{File: pc.file, Line: pc.line, Lines: pc.lines, Snippet: pc.snippet}
 		if err := applyPiece(r, pc); err != nil {
 			if errors.Is(err, errStashTaken) {
-				return Report{}, err
+				return report, err
 			}
 			if restoreErr := Restore(context.WithoutCancel(ctx), r.root); restoreErr != nil {
-				return Report{}, fmt.Errorf("undo piece %s:%d failed: %v; restore also failed: %w", pc.file, pc.line, err, restoreErr)
+				return report, fmt.Errorf("undo piece %s:%d failed: %v; restore also failed: %w", pc.file, pc.line, err, restoreErr)
 			}
-			return Report{}, fmt.Errorf("undo piece %s:%d failed (files restored): %w", pc.file, pc.line, err)
+			return report, fmt.Errorf("undo piece %s:%d failed (files restored): %w", pc.file, pc.line, err)
 		}
 		out, testErr := runTest(ctx, r.root, opts.Test, opts.Timeout)
+		res.OldOutput = tail(out)
 		if err := Restore(context.WithoutCancel(ctx), r.root); err != nil {
-			return Report{}, fmt.Errorf("restore failed; recover with `test-check prove --restore`: %w", err)
+			report.Pieces = append(report.Pieces, res)
+			return report, fmt.Errorf("restore failed; recover with `test-check prove --restore`: %w", err)
 		}
 		if ctx.Err() != nil {
-			return Report{}, ctx.Err()
+			report.Pieces = append(report.Pieces, res)
+			return report, ctx.Err()
 		}
 		if testErr == nil {
 			res.Outcome = PieceUnguarded
-			report.Outcome = OutcomePieceNotTested
+			if report.Outcome != OutcomeInconclusive {
+				report.Outcome = OutcomePieceNotTested
+			}
 		} else {
-			res.Outcome = PieceGuarded
-			res.BuildErrorSuspected = buildError.MatchString(out)
+			res.Outcome, res.Reason, res.BuildErrorSuspected = oldFailure(out, "")
+			if res.Outcome == OutcomeProven {
+				res.Outcome = PieceGuarded
+			} else {
+				report.Outcome, report.Reason = res.Outcome, res.Reason
+			}
+			report.BuildErrorSuspected = report.BuildErrorSuspected || res.BuildErrorSuspected
 		}
 		report.Pieces = append(report.Pieces, res)
 	}

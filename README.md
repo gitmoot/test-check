@@ -50,6 +50,7 @@ test-check prove --pieces --test "go test ./pkg -run '^(TestA|TestB)$'"
 
 It undoes one changed piece of code at a time (one diff hunk, a whole added file, or a whole deleted file) and runs the command. The command must fail every time.
 - A piece that leaves the command passing is reported `not_tested`, and the outcome is `piece_not_tested` (exit 4).
+- A compile/import-only failure is `inconclusive`, not `guarded`, and makes the overall outcome `inconclusive` (exit 4).
 - Comment- and whitespace-only hunks are skipped.
 - Above `--max-pieces` (default 60), nothing runs and the outcome is `too_many_pieces`.
 - Each piece goes through the same save-first stash, so `--restore` recovers an interrupted run.
@@ -61,14 +62,15 @@ Test files and fixtures keep their new versions for both runs. The reverted file
 Only one prove run may use a checkout at a time: a lock under the git dir makes a second run, or `--restore`, refuse while the first is alive. A lock left by a dead process is taken over. A test that hangs on the old code until `--timeout` counts as red.
 
 Outcomes:
-- `proven`: exit 0.
+- `proven`: exit 0. Behavioral failure on old code, pass on new code.
+- `inconclusive`: exit 4. The old run only showed a build/import failure (`reason: old_code_build_failed`), or did not mention the selected test (`reason: old_test_not_observed`).
 - `not_red_on_old`: exit 4. The test passes without the fix.
 - `fails_on_new`: exit 4.
 - `no_test_in_change`: exit 4.
 - `test_not_run`: exit 4.
 - `no_code_in_change`: exit 0. Only tests changed.
 
-A `build_error_suspected` flag marks an old-code failure that looks like a compile or import error rather than a failed assertion.
+A `build_error_suspected` flag marks an old-code failure that looks like a compile or import error rather than a failed assertion. This is not proof: test through an interface the old code already had. Actual Go/Python assertion-failure summaries take precedence over diagnostic words in assertion messages. In per-test mode, any inconclusive result prevents an overall `proven`; new-code failures still report `fails_on_new`.
 
 ## Use
 
@@ -88,6 +90,23 @@ Exit codes:
 The GitHub modes use the `gh` CLI. The key comes from `$OPENROUTER_API_KEY`,
 else the `OPENROUTER_API_KEY` line in `~/.config/gitmoot/keychain.env`. The
 model is pinned to `typesafe/jev-1.13`.
+
+## Local receipts
+
+Advice and proof commands automatically save a concise receipt after the command finishes (and, for proof, after restoration). Help, list-tests, restore, and usage errors do not create receipts.
+
+The default is `$XDG_STATE_HOME/test-check/receipts`, or `$HOME/.local/state/test-check/receipts`. Storage must be outside the checkout. Tool-owned directories are created with mode `0700`, files with `0600`; existing unsafe directories are refused, never chmodded. Each invocation has an independent directory containing `receipt.json` and its `output_ref` diagnostic link.
+
+Receipts include mode, command, available repository/base/HEAD/tool revision, times, result, warnings, piece outcomes, and named-test execution evidence. Advice hashes its already-collected input to distinguish uncommitted snapshots without storing the diff or prompt. Proof streams the already-enumerated changed paths under its existing lock before running tests, hashing base/HEAD, framed path names, modes, deletions, link targets, and file bytes (64 MiB total limit). This is a **changed-input identity**, not a complete runtime-environment snapshot: ignored files and external inputs are not covered. Missing/unreadable/oversized input identity stays unknown with a warning, never changing the core proof result. `observed` means a verbose Go/Python runner marker was seen; unsupported runners or missing/truncated output are `unknown`, not proof a test was skipped. Whole-command named-test rows are `aggregate_only`, not individual proofs. Receipt metadata is evidence of a command, not an approval or quality judgment.
+
+Diagnostics are **bounded tails**, not full raw logs: up to 2,000 bytes per output and 256 outputs, with truncation noted. No environment, credentials, configuration, prompts, or diffs are deliberately collected. Commands and runner output can themselves contain sensitive literals; these local files are not redacted and are never uploaded automatically.
+
+The receipt path is printed on stderr; JSON results add `receipt` and `receipt_status`. If saving fails, the original exit/outcome is preserved, stderr warns, and JSON contains `receipt_status: failed` and `receipt_error`, never a fake path. Controlled failures and interruptions can produce receipts after recovery; SIGKILL/power loss cannot guarantee one. Receipt writes never replace or remove prove's recovery stash.
+
+## Changes
+
+- Old-code build/import-only failures now return `inconclusive` (exit 4), including per-test and piece results. Diagnostic words in actual Go/Python assertion failures no longer imply build failure.
+- Advice and proof executions now save private, local receipts with command/result evidence and bounded diagnostic links. Receipt storage failures do not change proof/advice outcomes.
 
 ## Install
 
