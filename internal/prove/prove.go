@@ -200,8 +200,9 @@ func runWhole(ctx context.Context, r repo, mergeBase string, opts Options, repor
 	newOut, newErr := runTest(ctx, r.root, opts.Test, opts.Timeout)
 	report.NewOutput = tail(newOut)
 	if newErr != nil {
-		if ctx.Err() != nil {
-			return report, ctx.Err()
+		if interruptedRun(newErr) {
+			report.Reason = "new_run_interrupted"
+			return report, newErr
 		}
 		report.Outcome = OutcomeFailsOnNew
 		return report, nil
@@ -213,6 +214,10 @@ func runWhole(ctx context.Context, r repo, mergeBase string, opts Options, repor
 		report.OldOutput = tail(oldOut)
 	}); err != nil {
 		return report, err
+	}
+	if interruptedRun(oldErr) {
+		report.Reason = "old_run_interrupted"
+		return report, oldErr
 	}
 	if oldErr == nil {
 		report.Outcome = OutcomeNotRedOnOld
@@ -232,8 +237,9 @@ func runEach(ctx context.Context, r repo, mergeBase string, opts Options, report
 		results[i].Name = name
 		out, err := runTest(ctx, r.root, strings.ReplaceAll(opts.Test, NamePlaceholder, name), opts.Timeout)
 		results[i].NewOutput = tail(out)
-		if ctx.Err() != nil {
-			return report, ctx.Err()
+		if interruptedRun(err) {
+			results[i].Outcome, results[i].Reason = OutcomeInconclusive, "new_run_interrupted"
+			return report, err
 		}
 		switch {
 		case err != nil:
@@ -245,6 +251,7 @@ func runEach(ctx context.Context, r repo, mergeBase string, opts Options, report
 		}
 	}
 	if len(candidates) > 0 {
+		var interrupted error
 		if err := onBase(ctx, r, mergeBase, report.RevertedFiles, func() {
 			for _, i := range candidates {
 				if ctx.Err() != nil {
@@ -252,6 +259,11 @@ func runEach(ctx context.Context, r repo, mergeBase string, opts Options, report
 				}
 				out, err := runTest(ctx, r.root, strings.ReplaceAll(opts.Test, NamePlaceholder, names[i]), opts.Timeout)
 				results[i].OldOutput = tail(out)
+				if interruptedRun(err) {
+					results[i].Outcome, results[i].Reason = OutcomeInconclusive, "old_run_interrupted"
+					interrupted = err
+					return
+				}
 				if err == nil {
 					results[i].Outcome = OutcomeNotRedOnOld
 					continue
@@ -260,6 +272,9 @@ func runEach(ctx context.Context, r repo, mergeBase string, opts Options, report
 			}
 		}); err != nil {
 			return report, err
+		}
+		if interrupted != nil {
+			return report, interrupted
 		}
 	}
 	report.Outcome = OutcomeProven
@@ -610,12 +625,19 @@ func runTest(ctx context.Context, root, command string, timeout time.Duration) (
 	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
 	if runCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-		return string(out), fmt.Errorf("test command timed out after %s", timeout)
+		return string(out), fmt.Errorf("test command timed out after %s: %w", timeout, context.DeadlineExceeded)
+	}
+	if ctx.Err() != nil {
+		return string(out), ctx.Err()
 	}
 	return string(out), err
 }
 
-var buildError = regexp.MustCompile(`(?m)(undefined: |cannot find package|no required module|build failed|compilation failed|error TS\d+|Cannot find module|ModuleNotFoundError|ImportError: |NameError: name|error: cannot find '|error\[E0(425|433)\]|SyntaxError: )`)
+func interruptedRun(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+var buildError = regexp.MustCompile(`(?m)(undefined: |cannot find package|no required module|build failed|compilation failed|error TS\d+|Cannot find module|ModuleNotFoundError|ImportError: |NameError: name|error: cannot find '|error\[E0(425|433)\]|SyntaxError: |^(?:E\s+)?AttributeError: module '[^']+' has no attribute )`)
 
 // Runner failure summaries take precedence over diagnostic-looking assertion
 // messages. In particular, an assertion containing "ImportError:" is not an

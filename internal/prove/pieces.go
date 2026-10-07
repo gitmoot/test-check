@@ -236,8 +236,9 @@ func runPieces(ctx context.Context, r repo, mergeBase string, opts Options, repo
 	}
 	newOut, newErr := runTest(ctx, r.root, opts.Test, opts.Timeout)
 	report.NewOutput = tail(newOut)
-	if ctx.Err() != nil {
-		return report, ctx.Err()
+	if interruptedRun(newErr) {
+		report.Reason = "new_run_interrupted"
+		return report, newErr
 	}
 	if newErr != nil {
 		report.Outcome = OutcomeFailsOnNew
@@ -257,13 +258,16 @@ func runPieces(ctx context.Context, r repo, mergeBase string, opts Options, repo
 		}
 		out, testErr := runTest(ctx, r.root, opts.Test, opts.Timeout)
 		res.OldOutput = tail(out)
+		if interruptedRun(testErr) {
+			res.Outcome, res.Reason = OutcomeInconclusive, "old_run_interrupted"
+		}
 		if err := Restore(context.WithoutCancel(ctx), r.root); err != nil {
 			report.Pieces = append(report.Pieces, res)
 			return report, fmt.Errorf("restore failed; recover with `test-check prove --restore`: %w", err)
 		}
-		if ctx.Err() != nil {
+		if interruptedRun(testErr) {
 			report.Pieces = append(report.Pieces, res)
-			return report, ctx.Err()
+			return report, testErr
 		}
 		if testErr == nil {
 			res.Outcome = PieceUnguarded

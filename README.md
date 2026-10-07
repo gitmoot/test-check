@@ -63,12 +63,13 @@ Only one prove run may use a checkout at a time: a lock under the git dir makes 
 
 Outcomes:
 - `proven`: exit 0. Behavioral failure on old code, pass on new code.
-- `inconclusive`: exit 4. The old run only showed a build/import failure (`reason: old_code_build_failed`), or did not mention the selected test (`reason: old_test_not_observed`).
+- `inconclusive`: exit 4. The old run only showed a build/import failure or unavailable Python module API (`reason: old_code_build_failed`), or did not mention the selected test (`reason: old_test_not_observed`).
 - `not_red_on_old`: exit 4. The test passes without the fix.
 - `fails_on_new`: exit 4.
 - `no_test_in_change`: exit 4.
 - `test_not_run`: exit 4.
 - `no_code_in_change`: exit 0. Only tests changed.
+- Caller cancellation or test-check's own command deadline: exit 1 after restoration, never proof. Interrupted per-test/piece rows remain inconclusive; a framework's own assertion or panic is still a test failure, not a tool deadline.
 
 A `build_error_suspected` flag marks an old-code failure that looks like a compile or import error rather than a failed assertion. This is not proof: test through an interface the old code already had. Actual Go/Python assertion-failure summaries take precedence over diagnostic words in assertion messages. In per-test mode, any inconclusive result prevents an overall `proven`; new-code failures still report `fails_on_new`.
 
@@ -99,7 +100,7 @@ The default is `$XDG_STATE_HOME/test-check/receipts`, or `$HOME/.local/state/tes
 
 Receipts include mode, command, available repository/base/HEAD/tool revision, times, result, warnings, piece outcomes, and named-test execution evidence. Advice hashes its already-collected input to distinguish uncommitted snapshots without storing the diff or prompt. Proof streams the already-enumerated changed paths under its existing lock before running tests, hashing base/HEAD, framed path names, modes, deletions, link targets, and file bytes (64 MiB total limit). This is a **changed-input identity**, not a complete runtime-environment snapshot: ignored files and external inputs are not covered. Missing/unreadable/oversized input identity stays unknown with a warning, never changing the core proof result. `observed` means a verbose Go/Python runner marker was seen; unsupported runners or missing/truncated output are `unknown`, not proof a test was skipped. Whole-command named-test rows are `aggregate_only`, not individual proofs. Receipt metadata is evidence of a command, not an approval or quality judgment.
 
-Diagnostics are **bounded tails**, not full raw logs: up to 2,000 bytes per output and 256 outputs, with truncation noted. No environment, credentials, configuration, prompts, or diffs are deliberately collected. Commands and runner output can themselves contain sensitive literals; these local files are not redacted and are never uploaded automatically.
+Diagnostics are **bounded tails**, not full raw logs: up to 2,000 bytes per output and 256 outputs, with truncation noted. No environment, credentials, configuration, prompts, or diffs are deliberately collected. Advice command options are retained, but `--title` values (including `--title=...`) are explicitly `[redacted]` because they become prompt content; that command is not fully replayable. Other command and runner output literals may still be sensitive; they are not automatically redacted or uploaded.
 
 The receipt path is printed on stderr; JSON results add `receipt` and `receipt_status`. If saving fails, the original exit/outcome is preserved, stderr warns, and JSON contains `receipt_status: failed` and `receipt_error`, never a fake path. Controlled failures and interruptions can produce receipts after recovery; SIGKILL/power loss cannot guarantee one. Receipt writes never replace or remove prove's recovery stash.
 

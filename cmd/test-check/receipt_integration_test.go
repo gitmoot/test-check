@@ -139,6 +139,41 @@ func TestReceiptsDistinguishChangedInputAtSameCommit(t *testing.T) {
 	}
 }
 
+func TestAdviceReceiptPreservesOptionsWithoutPromptTitle(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv(apiKeyName, "")
+	dir := receiptFixture(t)
+	for _, titleArgs := range [][]string{{"--title", "private prompt title"}, {"--title=private prompt title"}} {
+		args := []string{"--dir", dir, "--base", "main", "--model", "fixture-model", "--json"}
+		args = append(args, titleArgs...)
+		var stdout, stderr bytes.Buffer
+		if code := run(args, &stdout, &stderr); code != exitUnavailable {
+			t.Fatalf("exit=%d: %s %s", code, stdout.String(), stderr.String())
+		}
+		var response struct{ Receipt string }
+		if err := json.Unmarshal(stdout.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(response.Receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var record struct{ Command string }
+		if err := json.Unmarshal(raw, &record); err != nil {
+			t.Fatal(err)
+		}
+		for _, option := range []string{"--dir", dir, "--base", "main", "--model", "fixture-model", "--json", "--title", "[redacted]"} {
+			if !strings.Contains(record.Command, option) {
+				t.Fatalf("missing option %q in command %q", option, record.Command)
+			}
+		}
+		if bytes.Contains(raw, []byte("private prompt title")) {
+			t.Fatal("receipt persisted raw prompt title")
+		}
+	}
+}
+
 func receiptFixture(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -194,4 +195,29 @@ func writeReceiptError(stdout io.Writer, err error, fields receiptFields) {
 		Error string `json:"error"`
 		receiptFields
 	}{err.Error(), fields})
+}
+
+// Keep the invocation options, but never persist the user-supplied advice
+// title: it becomes part of the model prompt. Its presence remains explicit.
+func adviceCommand(args []string) string {
+	var command strings.Builder
+	command.WriteString("test-check")
+	redactNext := false
+	for _, arg := range args {
+		if redactNext {
+			arg, redactNext = "[redacted]", false
+		} else {
+			flag, _, hasValue := strings.Cut(arg, "=")
+			if flag == "--title" || flag == "-title" {
+				if hasValue {
+					arg = flag + "=[redacted]"
+				} else {
+					redactNext = true
+				}
+			}
+		}
+		command.WriteByte(' ')
+		command.WriteString(strconv.Quote(arg))
+	}
+	return command.String()
 }

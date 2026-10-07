@@ -20,7 +20,7 @@ const exitNotProven = 4
 
 var proveMessages = map[string]string{
 	prove.OutcomeProven:         "The tests fail on the old code and pass on the new: they would catch a regression of this change.",
-	prove.OutcomeInconclusive:   "The old-code run did not establish a behavioral test failure. A build/import failure is not regression proof; use an interface the old code also has.",
+	prove.OutcomeInconclusive:   "The old-code run did not establish a behavioral test failure. A build/import failure or unavailable old API is not regression proof; use an interface the old code also has.",
 	prove.OutcomeNotRedOnOld:    "The tests PASS on the old code too, so they would not catch a regression. Make them fail without the fix.",
 	prove.OutcomeFailsOnNew:     "The tests FAIL on the new code. Fix that before proving.",
 	prove.OutcomeNoTestChanged:  "The change has no test files. If a test is needed, add one; otherwise record the one-off check you ran.",
@@ -125,7 +125,7 @@ func runProve(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "reason: %s\n", report.Reason)
 	}
 	if report.BuildErrorSuspected {
-		fmt.Fprintln(stdout, "warning: the old-code run looks like a build or import error, not a failed assertion. That only shows the test uses new code; for a bug fix, test the behavior through an interface the old code also has.")
+		fmt.Fprintln(stdout, "warning: the old-code run looks like a build/import error or unavailable old API, not a failed assertion. For a bug fix, test the behavior through an interface the old code also has.")
 	}
 	for _, res := range report.Tests {
 		note := ""

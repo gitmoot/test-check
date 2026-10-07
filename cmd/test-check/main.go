@@ -91,14 +91,7 @@ Key: $OPENROUTER_API_KEY, else OPENROUTER_API_KEY in ~/.config/gitmoot/keychain.
 	}
 
 	ctx := context.Background()
-	command := "test-check"
-	if *pr > 0 {
-		command += fmt.Sprintf(" --repo %s --pr %d", *repo, *pr)
-	}
-	if *compare != "" {
-		command += fmt.Sprintf(" --repo %s --compare %s", *repo, *compare)
-	}
-	rec := startReceipt("advice", *dir, *base, command, *pr == 0 && *compare == "")
+	rec := startReceipt("advice", *dir, *base, adviceCommand(args), *pr == 0 && *compare == "")
 	if *repo != "" {
 		rec.record.Repo = *repo
 	}
