@@ -25,6 +25,7 @@ import (
 
 const (
 	OutcomeProven        = "proven"
+	OutcomeInconclusive  = "inconclusive"
 	OutcomeNotRedOnOld   = "not_red_on_old"
 	OutcomeFailsOnNew    = "fails_on_new"
 	OutcomeNoTestChanged = "no_test_in_change"
@@ -45,7 +46,12 @@ const (
 
 // Report is the outcome of one prove run.
 type Report struct {
-	Outcome string `json:"outcome"`
+	Outcome         string `json:"outcome"`
+	Reason          string `json:"reason,omitempty"`
+	Base            string `json:"base,omitempty"`
+	Head            string `json:"head,omitempty"`
+	WorktreeDigest  string `json:"worktree_digest,omitempty"`
+	SnapshotWarning string `json:"snapshot_warning,omitempty"`
 	// BuildErrorSuspected: the old-code run failed with what looks like a
 	// compile or import error, not a failing assertion. A test of a brand-new
 	// API always does this; it proves nothing about a regression.
@@ -65,6 +71,7 @@ type Report struct {
 type TestResult struct {
 	Name                string `json:"name"`
 	Outcome             string `json:"outcome"`
+	Reason              string `json:"reason,omitempty"`
 	BuildErrorSuspected bool   `json:"build_error_suspected"`
 	NewOutput           string `json:"new_output,omitempty"`
 	OldOutput           string `json:"old_output,omitempty"`
@@ -147,7 +154,11 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	var report Report
+	report := Report{Base: mergeBase}
+	report.Head, report.WorktreeDigest, err = snapshotDigest(ctx, r, mergeBase, changed)
+	if err != nil {
+		report.SnapshotWarning = "working-tree snapshot unavailable: " + err.Error()
+	}
 	for _, p := range changed {
 		if IsTestSide(p) {
 			report.TestFiles = append(report.TestFiles, p)
@@ -166,7 +177,7 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 
 	if opts.Pieces {
 		if strings.Contains(opts.Test, NamePlaceholder) {
-			return Report{}, errors.New("piece mode runs the test command as given; drop {name}")
+			return report, errors.New("piece mode runs the test command as given; drop {name}")
 		}
 		return runPieces(ctx, r, mergeBase, opts, report)
 	}
@@ -176,10 +187,10 @@ func Run(ctx context.Context, opts Options) (Report, error) {
 	names := opts.Each
 	if len(names) == 0 {
 		if names, err = ChangedTestNames(r.git, mergeBase, r.root, report.TestFiles); err != nil {
-			return Report{}, err
+			return report, err
 		}
 		if len(names) == 0 {
-			return Report{}, errors.New("{name} given but no added or edited test functions were found in the change; pass --each NAME,...")
+			return report, errors.New("{name} given but no added or edited test functions were found in the change; pass --each NAME,...")
 		}
 	}
 	return runEach(ctx, r, mergeBase, opts, report, names)
@@ -189,8 +200,9 @@ func runWhole(ctx context.Context, r repo, mergeBase string, opts Options, repor
 	newOut, newErr := runTest(ctx, r.root, opts.Test, opts.Timeout)
 	report.NewOutput = tail(newOut)
 	if newErr != nil {
-		if ctx.Err() != nil {
-			return Report{}, ctx.Err()
+		if interruptedRun(newErr) {
+			report.Reason = "new_run_interrupted"
+			return report, newErr
 		}
 		report.Outcome = OutcomeFailsOnNew
 		return report, nil
@@ -199,16 +211,19 @@ func runWhole(ctx context.Context, r repo, mergeBase string, opts Options, repor
 	var oldErr error
 	if err := onBase(ctx, r, mergeBase, report.RevertedFiles, func() {
 		oldOut, oldErr = runTest(ctx, r.root, opts.Test, opts.Timeout)
+		report.OldOutput = tail(oldOut)
 	}); err != nil {
-		return Report{}, err
+		return report, err
 	}
-	report.OldOutput = tail(oldOut)
+	if interruptedRun(oldErr) {
+		report.Reason = "old_run_interrupted"
+		return report, oldErr
+	}
 	if oldErr == nil {
 		report.Outcome = OutcomeNotRedOnOld
 		return report, nil
 	}
-	report.Outcome = OutcomeProven
-	report.BuildErrorSuspected = buildError.MatchString(oldOut)
+	report.Outcome, report.Reason, report.BuildErrorSuspected = oldFailure(oldOut, "")
 	return report, nil
 }
 
@@ -216,14 +231,16 @@ func runWhole(ctx context.Context, r repo, mergeBase string, opts Options, repor
 // the ones that passed on the old code, so the tree is swapped a single time.
 func runEach(ctx context.Context, r repo, mergeBase string, opts Options, report Report, names []string) (Report, error) {
 	results := make([]TestResult, len(names))
+	report.Tests = results
 	var candidates []int
 	for i, name := range names {
 		results[i].Name = name
 		out, err := runTest(ctx, r.root, strings.ReplaceAll(opts.Test, NamePlaceholder, name), opts.Timeout)
-		if ctx.Err() != nil {
-			return Report{}, ctx.Err()
-		}
 		results[i].NewOutput = tail(out)
+		if interruptedRun(err) {
+			results[i].Outcome, results[i].Reason = OutcomeInconclusive, "new_run_interrupted"
+			return report, err
+		}
 		switch {
 		case err != nil:
 			results[i].Outcome = OutcomeFailsOnNew
@@ -234,6 +251,7 @@ func runEach(ctx context.Context, r repo, mergeBase string, opts Options, report
 		}
 	}
 	if len(candidates) > 0 {
+		var interrupted error
 		if err := onBase(ctx, r, mergeBase, report.RevertedFiles, func() {
 			for _, i := range candidates {
 				if ctx.Err() != nil {
@@ -241,23 +259,30 @@ func runEach(ctx context.Context, r repo, mergeBase string, opts Options, report
 				}
 				out, err := runTest(ctx, r.root, strings.ReplaceAll(opts.Test, NamePlaceholder, names[i]), opts.Timeout)
 				results[i].OldOutput = tail(out)
+				if interruptedRun(err) {
+					results[i].Outcome, results[i].Reason = OutcomeInconclusive, "old_run_interrupted"
+					interrupted = err
+					return
+				}
 				if err == nil {
 					results[i].Outcome = OutcomeNotRedOnOld
 					continue
 				}
-				results[i].Outcome = OutcomeProven
-				results[i].BuildErrorSuspected = buildError.MatchString(out)
+				results[i].Outcome, results[i].Reason, results[i].BuildErrorSuspected = oldFailure(out, names[i])
 			}
 		}); err != nil {
-			return Report{}, err
+			return report, err
+		}
+		if interrupted != nil {
+			return report, interrupted
 		}
 	}
-	report.Tests = results
 	report.Outcome = OutcomeProven
-	for _, worst := range []string{OutcomeNotRedOnOld, OutcomeNotRun, OutcomeFailsOnNew} {
+	for _, worst := range []string{OutcomeNotRedOnOld, OutcomeInconclusive, OutcomeNotRun, OutcomeFailsOnNew} {
 		for _, res := range results {
 			if res.Outcome == worst {
 				report.Outcome = worst
+				report.Reason = res.Reason
 			}
 		}
 	}
@@ -600,12 +625,35 @@ func runTest(ctx context.Context, root, command string, timeout time.Duration) (
 	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
 	if runCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
-		return string(out), fmt.Errorf("test command timed out after %s", timeout)
+		return string(out), fmt.Errorf("test command timed out after %s: %w", timeout, context.DeadlineExceeded)
+	}
+	if ctx.Err() != nil {
+		return string(out), ctx.Err()
 	}
 	return string(out), err
 }
 
-var buildError = regexp.MustCompile(`(?m)(undefined: |cannot find package|no required module|build failed|compilation failed|error TS\d+|Cannot find module|ModuleNotFoundError|ImportError: |NameError: name|error: cannot find '|error\[E0(425|433)\]|SyntaxError: )`)
+func interruptedRun(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+var buildError = regexp.MustCompile(`(?m)(undefined: |cannot find package|no required module|build failed|compilation failed|error TS\d+|Cannot find module|ModuleNotFoundError|ImportError: |NameError: name|error: cannot find '|error\[E0(425|433)\]|SyntaxError: |^(?:E\s+)?AttributeError: module '[^']+' has no attribute )`)
+
+// Runner failure summaries take precedence over diagnostic-looking assertion
+// messages. In particular, an assertion containing "ImportError:" is not an
+// import failure. These are the existing Go/Python runner contracts, not a
+// parser for arbitrary test frameworks.
+var assertionFailure = regexp.MustCompile(`(?m)^(--- FAIL: \S+|FAILED [^\r\n]*::\S+|FAIL: test\S*[ (])`)
+
+func oldFailure(out, name string) (outcome, reason string, buildFailed bool) {
+	if !assertionFailure.MatchString(out) && buildError.MatchString(out) {
+		return OutcomeInconclusive, "old_code_build_failed", true
+	}
+	if name != "" && !strings.Contains(out, name) {
+		return OutcomeInconclusive, "old_test_not_observed", false
+	}
+	return OutcomeProven, "", false
+}
 
 func tail(out string) string {
 	if len(out) <= tailBytes {

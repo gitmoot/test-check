@@ -20,6 +20,7 @@ const exitNotProven = 4
 
 var proveMessages = map[string]string{
 	prove.OutcomeProven:         "The tests fail on the old code and pass on the new: they would catch a regression of this change.",
+	prove.OutcomeInconclusive:   "The old-code run did not establish a behavioral test failure. A build/import failure or unavailable old API is not regression proof; use an interface the old code also has.",
 	prove.OutcomeNotRedOnOld:    "The tests PASS on the old code too, so they would not catch a regression. Make them fail without the fix.",
 	prove.OutcomeFailsOnNew:     "The tests FAIL on the new code. Fix that before proving.",
 	prove.OutcomeNoTestChanged:  "The change has no test files. If a test is needed, add one; otherwise record the one-off check you ran.",
@@ -67,7 +68,8 @@ func runProve(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if *restore {
-		if err := prove.Restore(ctx, *dir); err != nil {
+		err := prove.Restore(ctx, *dir)
+		if err != nil {
 			fmt.Fprintf(stderr, "test-check prove: %v\n", err)
 			return exitSource
 		}
@@ -84,9 +86,25 @@ func runProve(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "test-check prove: --each needs {name} in --test")
 		return exitUsage
 	}
+	commandArgs := make([]string, len(args))
+	for i, arg := range args {
+		commandArgs[i] = strconv.Quote(arg)
+	}
+	rec := startReceipt("prove", *dir, *base, "test-check prove "+strings.Join(commandArgs, " "), true)
 	report, err := prove.Run(ctx, prove.Options{Dir: *dir, Base: *base, Test: *test, Each: names, Timeout: *timeout, Pieces: *pieces, MaxPieces: *maxPieces})
 	if err != nil {
+		report.Outcome = "error"
+	}
+	fields := rec.proof(report, *test, err, stderr)
+	if err != nil {
 		fmt.Fprintf(stderr, "test-check prove: %v\n", err)
+		if *asJSON {
+			_ = json.NewEncoder(stdout).Encode(struct {
+				prove.Report
+				Error string `json:"error"`
+				receiptFields
+			}{report, err.Error(), fields})
+		}
 		return exitSource
 	}
 	code := exitNotProven
@@ -96,12 +114,18 @@ func runProve(args []string, stdout, stderr io.Writer) int {
 	if *asJSON {
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
-		_ = encoder.Encode(report)
+		_ = encoder.Encode(struct {
+			prove.Report
+			receiptFields
+		}{report, fields})
 		return code
 	}
 	fmt.Fprintf(stdout, "outcome: %s\n%s\n", report.Outcome, proveMessages[report.Outcome])
+	if report.Reason != "" {
+		fmt.Fprintf(stdout, "reason: %s\n", report.Reason)
+	}
 	if report.BuildErrorSuspected {
-		fmt.Fprintln(stdout, "warning: the old-code run looks like a build or import error, not a failed assertion. That only shows the test uses new code; for a bug fix, test the behavior through an interface the old code also has.")
+		fmt.Fprintln(stdout, "warning: the old-code run looks like a build/import error or unavailable old API, not a failed assertion. For a bug fix, test the behavior through an interface the old code also has.")
 	}
 	for _, res := range report.Tests {
 		note := ""
@@ -133,7 +157,7 @@ func runProve(args []string, stdout, stderr io.Writer) int {
 	switch report.Outcome {
 	case prove.OutcomeFailsOnNew:
 		fmt.Fprintf(stdout, "--- new-code run (tail) ---\n%s\n", report.NewOutput)
-	case prove.OutcomeProven, prove.OutcomeNotRedOnOld:
+	case prove.OutcomeProven, prove.OutcomeNotRedOnOld, prove.OutcomeInconclusive:
 		fmt.Fprintf(stdout, "--- old-code run (tail) ---\n%s\n", report.OldOutput)
 	}
 	return code

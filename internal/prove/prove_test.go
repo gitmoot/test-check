@@ -104,7 +104,7 @@ func TestRunOutcomesAndTheWorkingTreeIsRestored(t *testing.T) {
 		{"test that catches the bug", "grep -q 'return errStop' retry.go\n", OutcomeProven, false},
 		{"test that passes on the old code", "grep -q 'func Retry' retry.go && true\n", OutcomeNotRedOnOld, false},
 		{"test that fails on the new code", "grep -q 'return nil' retry.go\n", OutcomeFailsOnNew, false},
-		{"red only because a new name is undefined", "grep -q errStop stop.go || { echo 'undefined: errStop'; exit 1; }\n", OutcomeProven, true},
+		{"red only because a new name is undefined", "grep -q errStop stop.go || { echo 'undefined: errStop'; exit 1; }\n", OutcomeInconclusive, true},
 		{"no test changed", "", OutcomeNoTestChanged, false},
 	}
 	for _, tc := range cases {

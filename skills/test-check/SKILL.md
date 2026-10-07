@@ -24,14 +24,18 @@ A permanent test earns its place only if it protects behavior someone relies on 
    | outcome | exit | meaning |
    |---|---|---|
    | `proven` | 0 | Red on the old code, green on the new. Done. |
+   | `inconclusive` | 4 | The old run only failed to build/import or lacked a Python module API, or did not show the selected test. This is not behavioral regression proof; use an old-compatible interface and a verbose runner. |
    | `not_red_on_old` | 4 | The test passes without the fix. Make it fail without the fix — unless it is a guard test ("X is *not* matched", "Y stays unchanged") or only its fixture changed: those pass on old code by design; say so in the PR. |
    | `fails_on_new` | 4 | The test fails on your code. Fix that first. |
    | `no_test_in_change` | 4 | No test file changed. Add one, or treat it as a one-off check. |
    | `test_not_run` | 4 | The command never mentioned the test, so it probably selected nothing. Fix the command or the name. |
 
-   A `build_error_suspected` warning means the old run failed only because the test uses new names; for a bug fix, test through an interface the old code already had. If a run is interrupted, `test-check prove --restore` puts your files back. For a one-off check: run it and keep the output.
+   `build_error_suspected: true` with `reason: old_code_build_failed` is **inconclusive**, never proof. An assertion's message containing a diagnostic word is not itself a build failure. If a run is interrupted, `test-check prove --restore` puts your files back. For a one-off check: run it and keep the output.
+   Caller cancellation and test-check's own command deadline return exit 1 after restoration, never proof; interrupted child rows remain inconclusive. A test framework's own assertion/panic is not a tool deadline.
 
    Optionally, look for changed code no test checks: `test-check prove --pieces --test "<command that runs the change's tests>"` (`test-check prove --list-tests` prints them). It undoes each changed piece of code on its own and lists every `not_tested` piece. Many are fine (logging, wording, defaults); use the list to decide what deserves a test, not as a pass/fail. Done when the PR description records the `prove` outcome (or the one-off command and what you observed) — not before.
+
+   Commands automatically save private local receipts outside the checkout under `$XDG_STATE_HOME/test-check/receipts` (fallback `$HOME/.local/state/test-check/receipts`): command, available commit identity, named-test runner evidence, result/warnings, and links to bounded diagnostic tails, not full logs. The path is printed on stderr and included as `receipt` in JSON. Unknown execution is not evidence a test ran. Receipt-save failures warn without changing the original outcome/exit; receipts do not prove quality, upload data, or replace recovery state. Commands/output may contain sensitive literals; do not publish receipts without checking them.
 
 `test-check` is advice. Your own evidence decides; never skip verification because it said no test.
 

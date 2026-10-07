@@ -68,7 +68,7 @@ func run(args []string, stdout, stderr io.Writer) int {
       put back files a crashed prove run left reverted
 
 Exit: 0 advice printed / proven, 1 error, 2 usage, 3 JEV unavailable,
-4 not proven (passes on the old code, fails on the new, or no test changed).
+4 not proven (including inconclusive old-code build/import failures).
 Key: $OPENROUTER_API_KEY, else OPENROUTER_API_KEY in ~/.config/gitmoot/keychain.env.`)
 	}
 	dir := fs.String("dir", ".", "local git checkout")
@@ -91,6 +91,10 @@ Key: $OPENROUTER_API_KEY, else OPENROUTER_API_KEY in ~/.config/gitmoot/keychain.
 	}
 
 	ctx := context.Background()
+	rec := startReceipt("advice", *dir, *base, adviceCommand(args), *pr == 0 && *compare == "")
+	if *repo != "" {
+		rec.record.Repo = *repo
+	}
 	var in check.Input
 	var err error
 	switch {
@@ -108,25 +112,46 @@ Key: $OPENROUTER_API_KEY, else OPENROUTER_API_KEY in ~/.config/gitmoot/keychain.
 		in.Repo = *repo
 	}
 	if err != nil {
+		fields := rec.save("error", err, nil, stderr)
+		if *asJSON {
+			writeReceiptError(stdout, err, fields)
+		}
 		fmt.Fprintf(stderr, "test-check: %v\n", err)
 		return exitSource
 	}
+	rec.input(in)
 
 	key := apiKey()
 	if key == "" {
+		err := fmt.Errorf("JEV unavailable: no %s", apiKeyName)
+		fields := rec.save("unavailable", err, nil, stderr)
+		if *asJSON {
+			writeReceiptError(stdout, err, fields)
+		}
 		fmt.Fprintf(stderr, "test-check: JEV unavailable: no %s. Answer the four questions in the test-check skill yourself.\n", apiKeyName)
 		return exitUnavailable
 	}
 	result, err := check.Evaluate(ctx, newJudge(key), *model, in)
 	if err != nil {
+		fields := rec.save("unavailable", err, nil, stderr)
+		if *asJSON {
+			writeReceiptError(stdout, err, fields)
+		}
 		fmt.Fprintf(stderr, "test-check: JEV unavailable: %v. Answer the four questions in the test-check skill yourself.\n", err)
 		return exitUnavailable
 	}
+	if !result.DiffComplete {
+		rec.record.Warnings = append(rec.record.Warnings, "diff incomplete")
+	}
+	fields := rec.save(result.Advice, nil, nil, stderr)
 
 	if *asJSON {
 		encoder := json.NewEncoder(stdout)
 		encoder.SetIndent("", "  ")
-		_ = encoder.Encode(result)
+		_ = encoder.Encode(struct {
+			check.Result
+			receiptFields
+		}{result, fields})
 		return 0
 	}
 	fmt.Fprintf(stdout, "advice: %s\n", result.Advice)

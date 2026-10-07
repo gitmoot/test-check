@@ -62,6 +62,20 @@ func withJudge(t *testing.T, judge check.Judge, key string) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 }
 
+// CLI tests must never publish synthetic evidence in the user's receipt store.
+func TestMain(m *testing.M) {
+	state, err := os.MkdirTemp("", "test-check-state-")
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("XDG_STATE_HOME", state); err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(state)
+	os.Exit(code)
+}
+
 func TestRunPrintsAdviceForALocalChange(t *testing.T) {
 	withJudge(t, stubJudge{advice: check.AdviceNewTest}, "k")
 	var stdout, stderr bytes.Buffer
