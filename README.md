@@ -90,7 +90,9 @@ Exit codes:
 
 The GitHub modes use the `gh` CLI. The key comes from `$OPENROUTER_API_KEY`,
 else the `OPENROUTER_API_KEY` line in `~/.config/gitmoot/keychain.env`. The
-model is pinned to `typesafe/jev-1.13`.
+default model is OpenRouter's rolling `~typesafe/jev-latest` alias (including the
+leading `~`), not a pinned release. The System One endpoint is unchanged.
+The response may name a concrete model; do not infer that release from the alias.
 
 ## Local receipts
 

@@ -12,14 +12,14 @@ import (
 const (
 	// DefaultEndpoint is OpenRouter's System One route.
 	DefaultEndpoint = "https://openrouter.ai/api/v1/systemone"
-	// DefaultModel is pinned so a model release never silently changes a
-	// decision surface that was measured against a specific version.
-	DefaultModel      = "typesafe/jev-1.13"
+	// DefaultModel follows the rolling OpenRouter alias; a response may name
+	// the concrete release selected for that request.
+	DefaultModel      = "~typesafe/jev-latest"
 	DefaultTimeout    = 20 * time.Second
 	DefaultMaxRetries = 2
 )
 
-// Request is the body of POST /api/v1/systemone: a state, a pinned model,
+// Request is the body of POST /api/v1/systemone: a state, a model selector,
 // and a map of typed questions.
 type Request struct {
 	State     any                 `json:"state"`
